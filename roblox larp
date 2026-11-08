@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#0a0812;overflow:hidden;width:100vw;height:100vh;}
+canvas{display:block;width:100%!important;height:100%!important;}
+#status{position:fixed;bottom:8px;left:0;right:0;text-align:center;font-family:sans-serif;font-size:11px;color:rgba(255,255,255,0.35);pointer-events:none;}
+#loading{position:fixed;inset:0;background:#0a0812;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:sans-serif;}
+#loading-title{font-size:16px;font-weight:800;color:#fff;letter-spacing:0.1em;margin-bottom:12px;}
+#loading-bar-wrap{width:120px;height:2px;background:rgba(255,255,255,0.1);border-radius:99px;overflow:hidden;}
+#loading-bar{height:100%;width:0%;background:linear-gradient(90deg,#6d28d9,#818cf8);border-radius:99px;transition:width 0.3s;}
+#loading-sub{font-size:10px;color:rgba(255,255,255,0.3);margin-top:8px;}
+</style>
+</head>
+<body>
+<div id="loading">
+  <div id="loading-title">ROLARP</div>
+  <div id="loading-bar-wrap"><div id="loading-bar"></div></div>
+  <div id="loading-sub">Loading avatar sandbox...</div>
+</div>
+<div id="status"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ── RoLarp Avatar Sandbox Render Page ──────────────────────────────────
+// Hosted separately, embedded as iframe in the extension.
+// Receives messages: {type:'wear', ids:[...]} {type:'reset'}
+
+const setStatus = (msg) => { document.getElementById('status').textContent = msg; };
+const setLoad = (pct, msg) => {
+  document.getElementById('loading-bar').style.width = pct + '%';
+  document.getElementById('loading-sub').textContent = msg;
+};
+
+// ── Three.js setup ──────────────────────────────────────────────────────
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0812);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000);
+camera.position.set(0, 3, 8);
+camera.lookAt(0, 3, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+
+// Lights
+const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambient);
+const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+dir.position.set(5, 10, 7);
+scene.add(dir);
+const fill = new THREE.DirectionalLight(0x8866ff, 0.3);
+fill.position.set(-5, 5, -3);
+scene.add(fill);
+
+// Resize
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// Orbit controls (manual)
+let isDragging = false, lastX = 0, rotY = 0;
+renderer.domElement.addEventListener('mousedown', e => { isDragging = true; lastX = e.clientX; });
+renderer.domElement.addEventListener('touchstart', e => { isDragging = true; lastX = e.touches[0].clientX; });
+window.addEventListener('mouseup', () => isDragging = false);
+window.addEventListener('touchend', () => isDragging = false);
+window.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  rotY += (e.clientX - lastX) * 0.01;
+  lastX = e.clientX;
+});
+window.addEventListener('touchmove', e => {
+  if (!isDragging) return;
+  rotY += (e.touches[0].clientX - lastX) * 0.01;
+  lastX = e.touches[0].clientX;
+});
+
+// Animate
+const avatarGroup = new THREE.Group();
+scene.add(avatarGroup);
+function animate() {
+  requestAnimationFrame(animate);
+  avatarGroup.rotation.y = rotY;
+  renderer.render(scene, camera);
+}
+animate();
+
+// ── Avatar building ─────────────────────────────────────────────────────
+
+// Build a blocky R15 Roblox avatar with basic geometry (no mesh parsing needed)
+// Body parts map to known asset type IDs
+const BODY_COLORS = {
+  head: 0xffcc99, torso: 0x1a5276, rightArm: 0xffcc99, leftArm: 0xffcc99,
+  rightLeg: 0x1a5276, leftLeg: 0x1a5276
+};
+
+let currentAvatar = null;
+let equippedItems = []; // list of {id, mesh}
+
+function buildBaseAvatar(bodyColors) {
+  if (currentAvatar) { scene.remove(currentAvatar); }
+  const group = new THREE.Group();
+
+  const mkBox = (w, h, d, color, x, y, z) => {
+    const geo = new THREE.BoxGeometry(w, h, d);
+    const mat = new THREE.MeshLambertMaterial({ color });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, y, z);
+    return mesh;
+  };
+
+  const hc = bodyColors?.headColorId   ? brickToHex(bodyColors.headColorId)     : BODY_COLORS.head;
+  const tc = bodyColors?.torsoColorId  ? brickToHex(bodyColors.torsoColorId)    : BODY_COLORS.torso;
+  const rac = bodyColors?.rightArmColorId ? brickToHex(bodyColors.rightArmColorId) : BODY_COLORS.rightArm;
+  const lac = bodyColors?.leftArmColorId  ? brickToHex(bodyColors.leftArmColorId)  : BODY_COLORS.leftArm;
+  const rlc = bodyColors?.rightLegColorId ? brickToHex(bodyColors.rightLegColorId) : BODY_COLORS.rightLeg;
+  const llc = bodyColors?.leftLegColorId  ? brickToHex(bodyColors.leftLegColorId)  : BODY_COLORS.leftLeg;
+
+  // R15-ish proportions
+  const torso   = mkBox(2,   2,   1,   tc,  0,   3,   0);
+  const head    = mkBox(1.4, 1.4, 1.4, hc,  0,   5,   0);
+  const rArm    = mkBox(0.8, 1.8, 0.8, rac, -1.4, 3.1, 0);
+  const lArm    = mkBox(0.8, 1.8, 0.8, lac,  1.4, 3.1, 0);
+  const rLeg    = mkBox(0.8, 1.8, 0.8, rlc, -0.6, 1.1, 0);
+  const lLeg    = mkBox(0.8, 1.8, 0.8, llc,  0.6, 1.1, 0);
+  const neck    = mkBox(0.4, 0.4, 0.4, hc,  0,   4.2, 0);
+
+  [torso, head, rArm, lArm, rLeg, lLeg, neck].forEach(m => group.add(m));
+
+  // Neck joint
+  group.add(mkBox(0.3, 0.2, 0.3, 0x888888, 0, 4, 0));
+
+  currentAvatar = group;
+  avatarGroup.add(group);
+  return group;
+}
+
+// BrickColor ID to hex (common ones)
+const BRICK_COLORS = {
+  1:0xf2f3f3, 2:0xa1a5a2, 3:0xf9e999, 5:0xd7c59a, 6:0xc2a06e,
+  9:0xe8bab4, 11:0x80bbdc, 12:0xcb8442, 18:0xcc8e69, 21:0xc4281c,
+  23:0x0d69ac, 24:0xf5cd30, 25:0x624732, 26:0x1b2a34, 27:0x6d6e6c,
+  28:0x287f47, 29:0xa1c48c, 37:0x4b974b, 38:0xa05f35, 45:0xd3e4f5,
+  101:0xda867a, 102:0x6e99ca, 104:0x6b327c, 105:0xe29b40, 106:0xda8541,
+  107:0x008f9c, 119:0xa4bd47, 125:0xeab92d, 135:0x74869d, 141:0x27462d,
+  151:0x789082, 153:0x957977, 154:0x7b2d42, 168:0x958a73, 176:0x946434,
+  178:0xcc8265, 180:0xd09683, 190:0xf7ba60, 191:0xf9d62e, 192:0xe7a419,
+  193:0xd7522a, 194:0xa3a2a5, 195:0x4667a4, 196:0x23478b, 198:0x8e4285,
+  199:0xc7c1b7, 200:0xcabfa3, 208:0xe8d096, 217:0x7c5c46, 226:0xf5f3ae,
+  1004:0xffcc99, 1006:0xffdbb3
+};
+function brickToHex(id) { return BRICK_COLORS[id] || 0xffcc99; }
+
+// ── Fetch avatar data and build ─────────────────────────────────────────
+let myBodyColors = null;
+let myAvatarDef = null;
+
+async function loadMyAvatar() {
+  setLoad(20, 'Loading your avatar...');
+  try {
+    const r = await fetch('https://avatar.roblox.com/v1/avatar', { credentials: 'include' });
+    if (r.ok) {
+      const d = await r.json();
+      myBodyColors = d.bodyColors;
+      myAvatarDef = d;
+    }
+  } catch(e) {}
+  setLoad(60, 'Building avatar...');
+  buildBaseAvatar(myBodyColors);
+  setLoad(100, 'Ready');
+  setTimeout(() => {
+    document.getElementById('loading').style.display = 'none';
+    setStatus('Drag to rotate · Press Wear in the menu to preview items');
+  }, 400);
+}
+
+// ── Item preview using thumbnail sprites ─────────────────────────────────
+// For accessories/hats: place thumbnail sprite above the head
+// This gives a quick visual preview of items without mesh parsing
+
+const spriteGroup = new THREE.Group();
+avatarGroup.add(spriteGroup);
+
+async function addItemPreview(assetId) {
+  // Get thumbnail from Roblox
+  const thumbUrl = 'https://www.roblox.com/asset-thumbnail/image?assetId=' + assetId + '&width=250&height=250&format=png';
+  return new Promise((resolve) => {
+    const loader = new THREE.TextureLoader();
+    loader.crossOrigin = 'anonymous';
+    loader.load(
+      thumbUrl,
+      (tex) => {
+        const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+        const sprite = new THREE.Sprite(mat);
+        // Stack items vertically above head
+        const offset = spriteGroup.children.length * 1.4;
+        sprite.position.set(0, 6.2 + offset, 0);
+        sprite.scale.set(1.8, 1.8, 1);
+        sprite.userData.assetId = assetId;
+        spriteGroup.add(sprite);
+        resolve(sprite);
+      },
+      undefined,
+      () => resolve(null) // fail silently
+    );
+  });
+}
+
+function clearItemPreviews() {
+  while (spriteGroup.children.length) {
+    spriteGroup.remove(spriteGroup.children[0]);
+  }
+}
+
+// ── Message handler ─────────────────────────────────────────────────────
+const itemSprites = {}; // id -> sprite
+
+window.addEventListener('message', async (e) => {
+  const msg = e.data;
+  if (!msg || !msg.type) return;
+
+  if (msg.type === 'wear') {
+    const ids = msg.ids || [];
+    setStatus('Loading items...');
+    clearItemPreviews();
+    Object.keys(itemSprites).forEach(k => delete itemSprites[k]);
+    for (const id of ids) {
+      const sprite = await addItemPreview(id);
+      if (sprite) itemSprites[id] = sprite;
+    }
+    setStatus(ids.length + ' item(s) stacked · Drag to rotate');
+  }
+
+  if (msg.type === 'reset') {
+    clearItemPreviews();
+    Object.keys(itemSprites).forEach(k => delete itemSprites[k]);
+    setStatus('Drag to rotate');
+  }
+
+  if (msg.type === 'colors') {
+    myBodyColors = msg.colors;
+    buildBaseAvatar(myBodyColors);
+  }
+});
+
+// Init
+loadMyAvatar();
+</script>
+</body>
+</html>
